@@ -8,8 +8,6 @@
 
 (provide parse-type-descriptor)
 
-(define current-class-resolver (make-parameter 'current-class-resolver))
-
 (define-tokens type-tokens (PRIMITIVE CLASS))
 (define-empty-tokens type-delimiters (ARRAY LPAREN RPAREN END))
 
@@ -49,27 +47,25 @@
         [(#\V) 'void]
         [(#\Z) 'boolean])]
      [(CLASS)
-      (cons 'class ((current-class-resolver)
-                    (string-replace $1 "/" ".")))]]
+      (cons 'class (string-replace $1 "/" "."))]]
     [method-args
      [(RPAREN) '()]
      [(type method-args) (cons $1 $2)]])))
 
-(define (parse-type-descriptor str resolver)
-  (parameterize ([current-class-resolver resolver])
-    (call-with-input-string str
-      (λ (in)
-        (type-descriptor-parser
-         (λ () (type-descriptor-lexer in)))))))
+(define (parse-type-descriptor str)
+  (call-with-input-string str
+    (λ (in)
+      (type-descriptor-parser
+       (λ () (type-descriptor-lexer in))))))
 
 (module+ test
   (require rackunit)
-  (check-equal? (parse-type-descriptor "I" values)
+  (check-equal? (parse-type-descriptor "I")
                 'int)
-  (check-equal? (parse-type-descriptor "Ljava/lang/String;" values)
+  (check-equal? (parse-type-descriptor "Ljava/lang/String;")
                 '(class . "java.lang.String"))
-  (check-equal? (parse-type-descriptor "[[Z" values)
+  (check-equal? (parse-type-descriptor "[[Z")
                 '(array . (array . boolean)))
-  (check-equal? (parse-type-descriptor "(Ljava/lang/String;J)[Ljava/util/List;" values)
+  (check-equal? (parse-type-descriptor "(Ljava/lang/String;J)[Ljava/util/List;")
                 '(method ((class . "java.lang.String") long)
                          (array . (class . "java.util.List")))))

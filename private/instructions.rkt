@@ -3,18 +3,19 @@
 (require (for-syntax racket/base
                      racket/syntax
                      syntax/stx)
+         racket/class
+         racket/list
          racket/provide
          racket/splicing
-         racket/stxparam)
+         racket/stxparam
+         "type.rkt"
+         "vm.rkt")
 
 (provide (filtered-out
           (λ (name)
             (and (regexp-match? #rx"^:" name)
                  (substring name 1)))
-          (all-defined-out))
-         current-locals)
-
-(define current-locals (make-parameter 'current-locals))
+          (all-defined-out)))
 
 (define (local-variable index)
   (vector-ref (current-locals) index))
@@ -126,9 +127,13 @@
 
 ; Control
 
-(define-syntax-parameter :return #f)
+(define ((:return) stack) ((current-return)))
 
 ; References
 
-(define ((:invokestatic index) stack)
-  (error "TODO: invokestatic"))
+(define ((:invokestatic class-name method-name method-type) stack)
+  (define method ((current-resolve-method) class-name method-name method-type))
+  (define-values (args stack-rest) (split-at stack (method-arg-count method-type)))
+  (push (method-return-type method-type)
+        (send method invoke . args)
+        stack-rest))

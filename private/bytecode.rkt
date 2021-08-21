@@ -1,15 +1,19 @@
 #lang racket/base
 
 (require racket/contract/base
-         "opcodes.rkt")
+         "opcodes.rkt"
+         "type.rkt")
 
 (provide
  (contract-out
   [bytecode->instructions
-   (-> bytes?
-       (listof (cons/c exact-nonnegative-integer? list?)))]))
+   (->* (bytes?
+         #:resolve-reference (-> exact-nonnegative-integer? (list/c string? string? type?)))
+        (exact-nonnegative-integer? exact-nonnegative-integer?)
+        (listof (cons/c exact-nonnegative-integer? list?)))]))
 
-(define (bytecode->instructions bstr [start 0] [end (bytes-length bstr)])
+(define (bytecode->instructions bstr [start 0] [end (bytes-length bstr)]
+                                #:resolve-reference resolve-reference)
   (define (get-arg type start)
     (define width
       (case type
@@ -79,12 +83,17 @@
                   (values (reverse args) start)
                   (let-values ([(arg arg-end) (get-arg (car params) start)])
                     (next-arg (cdr params) (cons arg args) arg-end))))]))
-       (cons (cons start (cons instruction arguments))
+       (define resolved-arguments
+         (case instruction
+           [(invokestatic) (map (λ (v) `',v) (resolve-reference (car arguments)))]
+           [else arguments]))
+       (cons (cons start (cons instruction resolved-arguments))
              (next-instruction next-start))])))
 
 (module+ test
   (require rackunit)
-  (check-equal? (bytecode->instructions #"\20\6<\20\a=\e\34h>\35\270\0\2\261")
+  (check-equal? (bytecode->instructions #"\20\6<\20\a=\e\34h>\35\270\0\2\261"
+                                        #:resolve-reference list)
                 '((0 . (bipush 6))
                   (2 . (istore_1))
                   (3 . (bipush 7))
@@ -96,7 +105,8 @@
                   (10 . (iload_3))
                   (11 . (invokestatic 2))
                   (14 . (return))))
-  (check-equal? (bytecode->instructions #"\e\253\0\0\0\0\0\37\0\0\0\2\0\0\0\0\0\0\0\e\0\0\0\1\0\0\0\35\3\254\4\254\5\254")
+  (check-equal? (bytecode->instructions #"\e\253\0\0\0\0\0\37\0\0\0\2\0\0\0\0\0\0\0\e\0\0\0\1\0\0\0\35\3\254\4\254\5\254"
+                                        #:resolve-reference list)
                 '((0 . (iload_1))
                   (1 . (lookupswitch 31 2 0 27 1 29))
                   (28 . (iconst_0))

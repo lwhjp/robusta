@@ -9,10 +9,9 @@
          racket/stxparam
          "bytecode.rkt"
          "class-file/class-file.rkt"
-         (only-in "instructions.rkt"
-                  current-locals
-                  return)
-         "type-descriptor.rkt")
+         "type.rkt"
+         "type-descriptor.rkt"
+         "vm.rkt")
 
 (provide jclass%
          jfield%
@@ -30,16 +29,32 @@
   (define name (get-value class-file (get-field name-index class-info)))
   (string-replace name "/" "."))
 
+(define (get-name-and-type class-file index)
+  (define info (get-constant class-file index))
+  (values (get-value class-file (get-field name-index info))
+          (parse-type-descriptor
+           (get-value class-file (get-field type-index info)))))
+
+(define (resolve-reference class-file index)
+  (define ref (get-constant class-file index))
+  (define class-name
+    (get-class-name class-file (get-field class-index ref)))
+  (define-values (method-name method-type)
+    (get-name-and-type class-file (get-field name-and-type-index ref)))
+  (list class-name method-name method-type))
+
 (define jclass%
   (class object%
     (init-field access-flags
                 name
-                super)
+                super
+                class-loader)
     (super-new)
-    (abstract invoke-static-method)))
+    (abstract get-method)))
 
 (define loaded-class%
   (class jclass%
+    (inherit-field class-loader)
     (init class-file)
     (super-new [access-flags (get-field access-flags class-file)]
                [name (datum-intern-literal
@@ -48,10 +63,10 @@
                         (if (zero? index)
                             #f
                             (let ([name (get-class-name class-file index)])
-                              (delay (load-class name)))))])
+                              (delay (send class-loader load-class name)))))])
     (field [interfaces (for/list ([index (in-vector (get-field interfaces class-file))])
                          (let ([name (get-class-name class-file index)])
-                           (delay (load-class name))))]
+                           (delay (send class-loader load-class name))))]
            [fields (for/hash ([info (in-vector (get-field fields class-file))])
                      (let ([jmethod (make-object loaded-method% class-file info this)])
                        (values (get-field name jmethod) jmethod)))]
@@ -59,10 +74,9 @@
                       (let ([jfield (make-object loaded-method% class-file info this)])
                         (values (get-field name jfield) jfield)))])
     (inspect #f)
-    (define/override (invoke-static-method name)
-      (send (hash-ref methods name) invoke))
-    (define/public (load-class name)
-      (error "TODO: load class:" name))
+    (define/override (get-method name type)
+      ; TODO: method overloading
+      (hash-ref methods name))
     (define/public (resolve)
       (error "TODO: resolve"))))
 
@@ -82,8 +96,7 @@
                [name (datum-intern-literal
                       (get-value class-file (get-field name-index info)))]
                [type (parse-type-descriptor
-                      (get-value class-file (get-field descriptor-index info))
-                      (λ (name) (delay (send declaring-class load-class name))))])
+                      (get-value class-file (get-field descriptor-index info)))])
     (define attributes
       (parse-attributes class-file (get-field attributes info)))
     ; TODO: handle attributes
@@ -107,14 +120,13 @@
 (define loaded-method%
   (class jmethod%
     (init class-file
-          info
-          declaring-class)
+          info)
+    (init-field declaring-class)
     (super-new [access-flags (get-field access-flags info)]
                [name (datum-intern-literal
                       (get-value class-file (get-field name-index info)))]
                [type (parse-type-descriptor
-                      (get-value class-file (get-field descriptor-index info))
-                      (λ (name) (delay (send declaring-class load-class name))))])
+                      (get-value class-file (get-field descriptor-index info)))])
     (define attributes
       (parse-attributes class-file (get-field attributes info)))
     ; TODO: handle other attributes
@@ -123,39 +135,57 @@
         [(hash-ref attributes "Code" #f)
          => (λ (attr)
               (define instructions
-                (bytecode->instructions (get-field code attr)))
+                (bytecode->instructions
+                 (get-field code attr)
+                 #:resolve-reference
+                 (λ (index) (resolve-reference class-file index))))
               ; TODO: goto, args, references etc
               (define method-stx
                 (with-syntax ([(ins ...) (map cdr instructions)])
-                #`(λ ()
-                    (let/ec exit
-                      (parameterize ([current-locals (make-vector #,(get-field max-locals attr) 'null)])
-                        (syntax-parameterize ([return (make-rename-transformer #'exit)])
-                          (let* ([stack '()]
-                                 [stack (ins stack)] ...)
-                            (error "unexpected end of method"))))))))
+                #`(λ args
+                    (let/ec return
+                      (parameterize
+                          ([current-locals (make-vector #,(get-field max-locals attr) 'null)]
+                           [current-return return])
+                        (for ([a (in-list args)]
+                              [i (in-naturals)])
+                          (vector-set! (current-locals) i a))
+                        (let* ([stack '()]
+                               [stack (ins stack)] ...)
+                          (error "unexpected end of method")))))))
               (eval method-stx jit-ns))]
         [else #f]))
     (inspect #f)
-    (define/override (invoke) (proc))))
+    (define/override (invoke . args)
+      (parameterize
+          ([current-resolve-method
+            (λ (c m t)
+              (define loader (get-field class-loader declaring-class))
+              (define jclass (send loader load-class c))
+              (send jclass get-method m (method-arg-types t)))])
+        (apply proc args)))))
 
 (define (parse-attributes class-file vec)
   (for/hash ([attr (in-vector vec)])
     (values (get-value class-file (get-field attribute-name-index attr))
             attr)))
 
-(define (port->jclass name [in (current-input-port)])
-  (define c (make-object loaded-class% (read-class-file in)))
+(define (port->jclass loader name [in (current-input-port)])
+  (define c (new loaded-class%
+                 [class-file (read-class-file in)]
+                 [class-loader loader]))
   (unless (string=? name (get-field name c))
     (error "class file name mismatch"))
   c)
 
 (define class-loader%
   (class object%
-    (init-field [classpath '()]
-                [bootstrap-classes '()])
+    (init-field [classpath '()])
+    (init [bootstrap-classes '()])
     (super-new)
-    (define loaded-classes (make-hash bootstrap-classes))
+    (define loaded-classes
+      (make-hash (map (λ (c) (cons (get-field name c) c))
+                      bootstrap-classes)))
     (define (call-with-class-file name proc)
       (let/ec return
         (for ([path (in-list classpath)])
@@ -172,6 +202,7 @@
         (error "class not found:" name)))
     (define/public (define-class name in)
       (port->jclass
+       this
        name
        (cond
          [(input-port? in) in]
