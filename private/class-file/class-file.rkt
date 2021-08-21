@@ -7,9 +7,13 @@
          "constant.rkt"
          "binary.rkt")
 
-(provide (matching-identifiers-out #px"^[^\\*].*%$" (all-defined-out)))
+(provide read-class-file
+         (matching-identifiers-out #px"^[^\\*].*%$" (all-defined-out)))
 
 ; TODO: verify
+
+(define (read-class-file [in (current-input-port)])
+  (read-value class-file% in))
 
 (define class-file-magic
   (bytes->immutable-bytes (bytes #xCA #xFE #xBA #xBE)))
