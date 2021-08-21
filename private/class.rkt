@@ -15,6 +15,8 @@
          "type-descriptor.rkt")
 
 (provide jclass%
+         jfield%
+         jmethod%
          class-loader%)
 
 (define (get-constant class-file index)
@@ -30,62 +32,60 @@
 
 (define jclass%
   (class object%
+    (init-field access-flags
+                name
+                super)
     (super-new)
+    (abstract invoke-static-method)))
+
+(define loaded-class%
+  (class jclass%
     (init class-file)
-    (field [access-flags (get-field access-flags class-file)]
-           [name (datum-intern-literal
-                  (get-class-name class-file (get-field this-class class-file)))]
-           [super (let ([index (get-field super-class class-file)])
-                    (if (zero? index)
-                        #f
-                        (let ([name (get-class-name class-file index)])
-                          (delay (load-class name)))))]
-           [interfaces (for/list ([index (in-vector (get-field interfaces class-file))])
+    (super-new [access-flags (get-field access-flags class-file)]
+               [name (datum-intern-literal
+                      (get-class-name class-file (get-field this-class class-file)))]
+               [super (let ([index (get-field super-class class-file)])
+                        (if (zero? index)
+                            #f
+                            (let ([name (get-class-name class-file index)])
+                              (delay (load-class name)))))])
+    (field [interfaces (for/list ([index (in-vector (get-field interfaces class-file))])
                          (let ([name (get-class-name class-file index)])
                            (delay (load-class name))))]
            [fields (for/hash ([info (in-vector (get-field fields class-file))])
-                     (let ([name (datum-intern-literal
-                                  (get-value class-file (get-field name-index info)))])
-                       (values name
-                               (make-object field%
-                                 class-file
-                                 this
-                                 (get-field access-flags info)
-                                 name
-                                 (parse-type-descriptor
-                                  (get-value class-file (get-field descriptor-index info))
-                                  (λ (name) (delay (load-class name))))
-                                 (parse-attributes class-file (get-field attributes info))))))]
+                     (let ([jmethod (make-object loaded-method% class-file info this)])
+                       (values (get-field name jmethod) jmethod)))]
            [methods (for/hash ([info (in-vector (get-field methods class-file))])
-                      (let ([name (datum-intern-literal
-                                   (get-value class-file (get-field name-index info)))])
-                        (values name
-                                (make-object method%
-                                  class-file
-                                  this
-                                  (get-field access-flags info)
-                                  name
-                                  (parse-type-descriptor
-                                   (get-value class-file (get-field descriptor-index info))
-                                   (λ (name) (delay (load-class name))))
-                                  (parse-attributes class-file (get-field attributes info))))))])
+                      (let ([jfield (make-object loaded-method% class-file info this)])
+                        (values (get-field name jfield) jfield)))])
     (inspect #f)
-    (define/public (invoke-static-method name)
+    (define/override (invoke-static-method name)
       (send (hash-ref methods name) invoke))
     (define/public (load-class name)
       (error "TODO: load class:" name))
     (define/public (resolve)
       (error "TODO: resolve"))))
 
-(define field%
+(define jfield%
   (class object%
     (super-new)
-    (init class-file
-          declaring-class)
     (init-field access-flags
                 name
-                type)
-    (init attributes)
+                type)))
+
+(define loaded-field%
+  (class jfield%
+    (init class-file
+          info
+          declaring-class)
+    (super-new [access-flags (get-field access-flags info)]
+               [name (datum-intern-literal
+                      (get-value class-file (get-field name-index info)))]
+               [type (parse-type-descriptor
+                      (get-value class-file (get-field descriptor-index info))
+                      (λ (name) (delay (send declaring-class load-class name))))])
+    (define attributes
+      (parse-attributes class-file (get-field attributes info)))
     ; TODO: handle attributes
     (inspect #f)))
 
@@ -96,15 +96,27 @@
     (namespace-require 'robusta/private/instructions)
     (current-namespace)))
 
-(define method%
+(define jmethod%
   (class object%
-    (super-new)
-    (init class-file
-          declaring-class)
     (init-field access-flags
                 name
                 type)
-    (init attributes)
+    (super-new)
+    (abstract invoke)))
+
+(define loaded-method%
+  (class jmethod%
+    (init class-file
+          info
+          declaring-class)
+    (super-new [access-flags (get-field access-flags info)]
+               [name (datum-intern-literal
+                      (get-value class-file (get-field name-index info)))]
+               [type (parse-type-descriptor
+                      (get-value class-file (get-field descriptor-index info))
+                      (λ (name) (delay (send declaring-class load-class name))))])
+    (define attributes
+      (parse-attributes class-file (get-field attributes info)))
     ; TODO: handle other attributes
     (define proc
       (cond
@@ -125,7 +137,7 @@
               (eval method-stx jit-ns))]
         [else #f]))
     (inspect #f)
-    (define/public (invoke) (proc))))
+    (define/override (invoke) (proc))))
 
 (define (parse-attributes class-file vec)
   (for/hash ([attr (in-vector vec)])
@@ -133,7 +145,7 @@
             attr)))
 
 (define (port->jclass name [in (current-input-port)])
-  (define c (make-object jclass% (read-class-file in)))
+  (define c (make-object loaded-class% (read-class-file in)))
   (unless (string=? name (get-field name c))
     (error "class file name mismatch"))
   c)
