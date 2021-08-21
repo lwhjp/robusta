@@ -1,12 +1,17 @@
 #lang racket/base
 
-(require racket/class
+(require (for-syntax racket/base)
+         racket/class
          racket/match
          racket/port
          racket/promise
          racket/string
+         racket/stxparam
          "bytecode.rkt"
          "class-file/class-file.rkt"
+         (only-in "instructions.rkt"
+                  current-locals
+                  return)
          "type-descriptor.rkt")
 
 (provide jclass%
@@ -65,6 +70,8 @@
                                    (λ (name) (delay (load-class name))))
                                   (parse-attributes class-file (get-field attributes info))))))])
     (inspect #f)
+    (define/public (invoke-static-method name)
+      (send (hash-ref methods name) invoke))
     (define/public (load-class name)
       (error "TODO: load class:" name))
     (define/public (resolve)
@@ -82,6 +89,13 @@
     ; TODO: handle attributes
     (inspect #f)))
 
+(define-namespace-anchor here/ns)
+
+(define jit-ns
+  (parameterize ([current-namespace (namespace-anchor->empty-namespace here/ns)])
+    (namespace-require 'robusta/private/instructions)
+    (current-namespace)))
+
 (define method%
   (class object%
     (super-new)
@@ -92,13 +106,26 @@
                 type)
     (init attributes)
     ; TODO: handle other attributes
-    (define code
+    (define proc
       (cond
         [(hash-ref attributes "Code" #f)
          => (λ (attr)
-              (bytecode->instructions (get-field code attr)))]
+              (define instructions
+                (bytecode->instructions (get-field code attr)))
+              ; TODO: goto, args, references etc
+              (define method-stx
+                (with-syntax ([(ins ...) (map cdr instructions)])
+                #`(λ ()
+                    (let/ec exit
+                      (parameterize ([current-locals (make-vector #,(get-field max-locals attr) 'null)])
+                        (syntax-parameterize ([return (make-rename-transformer #'exit)])
+                          (let* ([stack '()]
+                                 [stack (ins stack)] ...)
+                            (error "unexpected end of method"))))))))
+              (eval method-stx jit-ns))]
         [else #f]))
-    (inspect #f)))
+    (inspect #f)
+    (define/public (invoke) (proc))))
 
 (define (parse-attributes class-file vec)
   (for/hash ([attr (in-vector vec)])
