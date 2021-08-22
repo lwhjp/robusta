@@ -9,6 +9,7 @@
          racket/stxparam
          "bytecode.rkt"
          "class-file/class-file.rkt"
+         "jar.rkt"
          "type.rkt"
          "type-descriptor.rkt"
          "vm.rkt")
@@ -191,7 +192,10 @@
         (for ([path (in-list classpath)])
           (cond
             [(and (string-suffix? path ".jar") (file-exists? path))
-             (error "TODO: jar")]
+             (let* ([jar (get-jar path)]
+                    [class-file (send jar get-class-file name)])
+               (when class-file
+                 (return (call-with-input-bytes class-file proc))))]
             [(directory-exists? path)
              (let ([class-file-path (path-add-extension
                                      (apply build-path path (string-split name "."))
@@ -207,6 +211,9 @@
        (cond
          [(input-port? in) in]
          [else (open-input-bytes in)])))
+    (define jar-cache (make-hash))
+    (define/public (get-jar path)
+      (hash-ref! jar-cache path (λ () (make-object jar% path))))
     (define/public (load-class name [resolve? #f])
       (define c
         (hash-ref!
