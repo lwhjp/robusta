@@ -9,6 +9,7 @@
          racket/stxparam
          "bytecode.rkt"
          "class-file/class-file.rkt"
+         "class-file/constant.rkt"
          "jar.rkt"
          "type.rkt"
          "type-descriptor.rkt"
@@ -25,16 +26,30 @@
 (define (get-value class-file index)
   (get-field value (get-constant class-file index)))
 
+(define (get-value/ldc class-file index loader)
+  (define info (get-constant class-file index))
+  (cond
+    [(field-bound? value info) (get-field value info)]
+    [(is-a? info constant:class%)
+     (send loader load-class (get-value class-file (get-field name-index info)))]
+    [else ; TODO: load method reference
+     'null]))
+
 (define (get-class-name class-file index)
   (define class-info (get-constant class-file index))
   (define name (get-value class-file (get-field name-index class-info)))
   (string-replace name "/" "."))
 
+(define (get-type class-file index)
+  (define info (get-constant class-file index))
+  (if (is-a? info constant:class%)
+      `(class . ,(get-value class-file (get-field name-index info)))
+      (parse-type-descriptor (get-field value info))))
+
 (define (get-name-and-type class-file index)
   (define info (get-constant class-file index))
   (values (get-value class-file (get-field name-index info))
-          (parse-type-descriptor
-           (get-value class-file (get-field type-index info)))))
+          (get-type class-file (get-field type-index info))))
 
 (define (resolve-reference class-file index)
   (define ref (get-constant class-file index))
@@ -51,7 +66,11 @@
                 super
                 class-loader)
     (super-new)
-    (abstract get-method)))
+    (abstract get-jfield
+              get-method
+              instance-of?
+              new-instance
+              set-jfield!)))
 
 (define loaded-class%
   (class jclass%
@@ -74,12 +93,28 @@
            [methods (for/hash ([info (in-vector (get-field methods class-file))])
                       (let ([jfield (make-object loaded-method% class-file info this)])
                         (values (get-field name jfield) jfield)))])
+    (define field-values (hash)) ; TODO: initialize and check
     (inspect #f)
-    (define/override (get-method name type)
+    (define/override (get-jfield name)
+      (hash-ref field-values name))
+    (define/override (get-method kind name type)
+      ; TODO: check superclass etc (method depends on kind)
       ; TODO: method overloading
       (hash-ref methods name))
+    (define/override (instance-of? type)
+      ; TODO
+      #f)
+    (define/override (new-instance)
+      (make-object jobject%
+        this
+        (for/hash ([(name field) (in-hash fields)])
+          ; FIXME: parent fields
+          ; FIXME: appropriate init value
+          (values name 'null))))
     (define/public (resolve)
-      (error "TODO: resolve"))))
+      (error "TODO: resolve"))
+    (define/override (set-jfield! name v)
+      (hash-set! field-values name v))))
 
 (define jfield%
   (class object%
@@ -139,9 +174,14 @@
               (define instructions
                 (bytecode->instructions
                  (get-field code attr)
-                 #:resolve-reference
-                 (λ (index) (resolve-reference class-file index))))
-              ; TODO: goto, args, references etc
+                 #:get-class-name
+                 (λ (index) (get-class-name class-file index))
+                 #:get-constant
+                 (λ (index) (get-value/ldc class-file index (get-field class-loader declaring-class)))
+                 #:get-reference
+                 (λ (index) (resolve-reference class-file index))
+                 #:get-type
+                 (λ (index) (get-type class-file index))))
               (define method-stx
                 (with-syntax ([(ins ...) (map (λ (p)
                                                 (namespace-syntax-introduce
@@ -151,7 +191,8 @@
                 #`(λ args
                     (let/ec return
                       (parameterize
-                          ([current-locals (make-vector #,(get-field max-locals attr) 'null)]
+                          ([current-jump (λ (offset stack) (error 'TODO))] ; TODO
+                           [current-locals (make-vector #,(get-field max-locals attr) 'null)]
                            [current-return return])
                         (for ([a (in-list args)]
                               [i (in-naturals)])
@@ -164,17 +205,30 @@
     (inspect #f)
     (define/override (invoke . args)
       (parameterize
-          ([current-resolve-method
-            (λ (c m t)
+          ([current-resolve-class
+            (λ (name)
               (define loader (get-field class-loader declaring-class))
-              (define jclass (send loader load-class c))
-              (send jclass get-method m (method-arg-types t)))])
+              (send loader load-class name))]
+           [current-resolve-method
+            (λ (kind c m t)
+              (define jclass ((current-resolve-class) c))
+              (send jclass get-method kind m (method-arg-types t)))])
         (apply proc args)))))
 
 (define (parse-attributes class-file vec)
   (for/hash ([attr (in-vector vec)])
     (values (get-value class-file (get-field attribute-name-index attr))
             attr)))
+
+(define jobject%
+  (class object%
+    (super-new)
+    (init-field jclass
+                fields)
+    (define/public (get-jfield name)
+      (hash-ref fields name))
+    (define/public (set-jfield! name v)
+      (hash-set! fields name v))))
 
 (define (port->jclass loader name [in (current-input-port)])
   (define c (new loaded-class%
