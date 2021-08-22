@@ -107,6 +107,7 @@
 
 (define jit-ns
   (parameterize ([current-namespace (namespace-anchor->empty-namespace here/ns)])
+    (namespace-require '(only racket/base #%app #%datum quote))
     (namespace-require 'robusta/private/instructions)
     (current-namespace)))
 
@@ -142,7 +143,11 @@
                  (λ (index) (resolve-reference class-file index))))
               ; TODO: goto, args, references etc
               (define method-stx
-                (with-syntax ([(ins ...) (map cdr instructions)])
+                (with-syntax ([(ins ...) (map (λ (p)
+                                                (namespace-syntax-introduce
+                                                 (datum->syntax #f (cdr p))
+                                                 jit-ns))
+                                              instructions)])
                 #`(λ args
                     (let/ec return
                       (parameterize
@@ -154,7 +159,7 @@
                         (let* ([stack '()]
                                [stack (ins stack)] ...)
                           (error "unexpected end of method")))))))
-              (eval method-stx jit-ns))]
+              (eval-syntax method-stx))]
         [else #f]))
     (inspect #f)
     (define/override (invoke . args)

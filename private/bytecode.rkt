@@ -103,7 +103,7 @@
                   (8 . (imul))
                   (9 . (istore_3))
                   (10 . (iload_3))
-                  (11 . (invokestatic 2))
+                  (11 . (invokestatic '2))
                   (14 . (return))))
   (check-equal? (bytecode->instructions #"\e\253\0\0\0\0\0\37\0\0\0\2\0\0\0\0\0\0\0\e\0\0\0\1\0\0\0\35\3\254\4\254\5\254"
                                         #:resolve-reference list)
